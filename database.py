@@ -48,6 +48,15 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS admins (
+                    user_id    INTEGER PRIMARY KEY,
+                    username   TEXT    DEFAULT '',
+                    first_name TEXT    DEFAULT '',
+                    added_by   INTEGER,
+                    added_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
     # ── Users ──────────────────────────────────────────────────────────────────
     def upsert_user(self, user_id: int, username: str, first_name: str):
@@ -149,6 +158,48 @@ class Database:
                     "SELECT * FROM subscription_log ORDER BY created_at DESC LIMIT 100"
                 ).fetchall()
             return [dict(r) for r in rows]
+
+    # ── Admins ─────────────────────────────────────────────────────────────────
+    def add_admin(self, user_id: int, username: str, first_name: str, added_by: int) -> bool:
+        """Добавить доп. админа. Возвращает False если уже существует."""
+        with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT user_id FROM admins WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            if existing:
+                return False
+            conn.execute(
+                "INSERT INTO admins (user_id, username, first_name, added_by) VALUES (?, ?, ?, ?)",
+                (user_id, username or "", first_name or "", added_by)
+            )
+            return True
+
+    def remove_admin(self, user_id: int) -> bool:
+        """Удалить доп. админа. Возвращает False если не найден."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT user_id FROM admins WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            if not row:
+                return False
+            conn.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
+            return True
+
+    def get_extra_admins(self) -> list[dict]:
+        """Список всех доп. админов."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM admins ORDER BY added_at DESC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def is_extra_admin(self, user_id: int) -> bool:
+        """Проверить, является ли юзер доп. админом."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT user_id FROM admins WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return row is not None
 
     # ── Stats ──────────────────────────────────────────────────────────────────
     def get_stats(self) -> dict:
