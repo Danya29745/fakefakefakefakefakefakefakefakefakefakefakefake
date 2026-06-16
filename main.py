@@ -1,4 +1,3 @@
-cat > /home/claude/DialogTrackerX/main.py << 'PYEOF'
 #!/usr/bin/env python3
 """
 👁 DialogTrackerX Bot
@@ -2084,5 +2083,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-PYEOF
 echo "Done"
