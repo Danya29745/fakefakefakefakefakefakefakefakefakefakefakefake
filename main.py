@@ -369,7 +369,7 @@ async def toggle_user_setting(uid, field):
 # ХЕЛПЕРЫ
 # ══════════════════════════════════════════════
 
-def is_admin(uid): return uid in ADMIN_IDS
+def is_admin(uid): return uid in ADMIN_IDS or db.is_extra_admin(uid)
 
 def user_link(uid, first_name, username=None):
     name = first_name or "Пользователь"
@@ -528,14 +528,18 @@ def back_kb():
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="u:main")]
     ])
 
-def admin_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
+def admin_kb(is_root: bool = False):
+    rows = [
         [InlineKeyboardButton(text="👥 Пользователи", callback_data="adm:users")],
         [InlineKeyboardButton(text="🔗 Подключения",   callback_data="adm:connections")],
         [InlineKeyboardButton(text="🎯 Таргеты",       callback_data="adm:targets")],
         [InlineKeyboardButton(text="📊 Статистика",    callback_data="adm:stats")],
         [InlineKeyboardButton(text="📢 Рассылка",      callback_data="adm:broadcast")],
-    ])
+    ]
+    # Кнопка управления админами — только для корневых админов из ADMIN_IDS
+    if is_root:
+        rows.append([InlineKeyboardButton(text="🛡 Управление админами", callback_data="adm:admins")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def adm_back_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -1089,6 +1093,7 @@ class AdminStates(StatesGroup):
     waiting_user_id    = State()
     waiting_target_id  = State()
     waiting_broadcast  = State()
+    waiting_new_admin_id = State()
 
 # ══════════════════════════════════════════════
 # СОБЫТИЯ
@@ -1623,18 +1628,131 @@ async def cmd_connect(msg: Message):
 async def cmd_admin(msg: Message, state: FSMContext):
     if not is_admin(msg.from_user.id): return await msg.answer("⛔ Нет доступа.", parse_mode="HTML")
     await state.clear()
+    is_root = msg.from_user.id in ADMIN_IDS
     await msg.answer(
         f"👁 <b>{BOT_NAME} · Панель администратора</b>\n\nВыбери действие:",
-        reply_markup=admin_kb(),
+        reply_markup=admin_kb(is_root=is_root),
         parse_mode="HTML")
 
 @admin_router.callback_query(F.data == "adm:back")
 async def adm_back(call: CallbackQuery, state: FSMContext):
     await state.clear()
+    is_root = call.from_user.id in ADMIN_IDS
     await safe_edit(call,
         f"👁 <b>{BOT_NAME} · Панель администратора</b>\n\nВыбери действие:",
-        reply_markup=admin_kb())
+        reply_markup=admin_kb(is_root=is_root))
     await call.answer()
+
+# ── Управление доп. админами (только для корневых) ───────────────────────────
+
+def admins_list_kb(admins: list) -> InlineKeyboardMarkup:
+    rows = []
+    for a in admins:
+        name  = a.get("first_name") or "—"
+        uname = f" @{a['username']}" if a.get("username") else ""
+        rows.append([InlineKeyboardButton(
+            text=f"❌ {name}{uname}",
+            callback_data=f"adm:rm_admin:{a['user_id']}"
+        )])
+    rows.append([InlineKeyboardButton(text="➕ Добавить админа", callback_data="adm:add_admin")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад",           callback_data="adm:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+@admin_router.callback_query(F.data == "adm:admins")
+async def adm_admins_list(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("⛔ Только для главных админов.", show_alert=True)
+    admins = db.get_extra_admins()
+    text = "🛡 <b>Доп. администраторы</b>\n\n"
+    if admins:
+        for a in admins:
+            name  = a.get("first_name") or "—"
+            uname = f" @{a['username']}" if a.get("username") else ""
+            text += f"• {name}{uname} (<code>{a['user_id']}</code>)\n"
+    else:
+        text += "Доп. администраторов нет.\n"
+    text += "\nНажми ❌ рядом с именем чтобы убрать, или добавь нового:"
+    await safe_edit(call, text, reply_markup=admins_list_kb(admins))
+    await call.answer()
+
+@admin_router.callback_query(F.data == "adm:add_admin")
+async def adm_add_admin_start(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("⛔", show_alert=True)
+    await safe_edit(call,
+        "🛡 <b>Добавить администратора</b>\n\n"
+        "Отправь <b>Telegram ID</b> пользователя которому хочешь выдать доступ:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Отмена", callback_data="adm:admins")]
+        ])
+    )
+    await state.set_state(AdminStates.waiting_new_admin_id)
+    await call.answer()
+
+@admin_router.message(AdminStates.waiting_new_admin_id)
+async def adm_add_admin_receive(msg: Message, state: FSMContext, bot: Bot):
+    if msg.from_user.id not in ADMIN_IDS:
+        await state.clear()
+        return
+    raw = (msg.text or "").strip()
+    if not raw.lstrip("-").isdigit():
+        return await msg.answer("⚠️ Введи числовой Telegram ID.", parse_mode="HTML")
+    new_id = int(raw)
+    if new_id in ADMIN_IDS:
+        await state.clear()
+        return await msg.answer("ℹ️ Этот пользователь уже корневой администратор.", parse_mode="HTML")
+    # Пробуем получить инфу о юзере
+    username, first_name = "", ""
+    try:
+        chat = await bot.get_chat(new_id)
+        username   = chat.username   or ""
+        first_name = chat.first_name or ""
+    except Exception:
+        pass
+    ok = db.add_admin(new_id, username, first_name, added_by=msg.from_user.id)
+    await state.clear()
+    if ok:
+        name_str = f"@{username}" if username else first_name or str(new_id)
+        await msg.answer(
+            f"✅ <b>{name_str}</b> (<code>{new_id}</code>) теперь администратор.",
+            parse_mode="HTML"
+        )
+        # Уведомляем нового админа
+        try:
+            await bot.send_message(new_id,
+                "🛡 Тебе выдан доступ администратора к боту.\n"
+                "Используй /admin для открытия панели.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    else:
+        await msg.answer("ℹ️ Этот пользователь уже является администратором.", parse_mode="HTML")
+
+@admin_router.callback_query(F.data.startswith("adm:rm_admin:"))
+async def adm_remove_admin(call: CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("⛔", show_alert=True)
+    target_id = int(call.data.split(":")[2])
+    ok = db.remove_admin(target_id)
+    if ok:
+        await call.answer("✅ Админ удалён", show_alert=False)
+    else:
+        await call.answer("⚠️ Не найден", show_alert=True)
+    # Обновляем список
+    admins = db.get_extra_admins()
+    text = "🛡 <b>Доп. администраторы</b>\n\n"
+    if admins:
+        for a in admins:
+            name  = a.get("first_name") or "—"
+            uname = f" @{a['username']}" if a.get("username") else ""
+            text += f"• {name}{uname} (<code>{a['user_id']}</code>)\n"
+    else:
+        text += "Доп. администраторов нет.\n"
+    text += "\nНажми ❌ рядом с именем чтобы убрать, или добавь нового:"
+    await safe_edit(call, text, reply_markup=admins_list_kb(admins))
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 @admin_router.callback_query(F.data == "adm:stats")
 async def adm_stats(call: CallbackQuery):
