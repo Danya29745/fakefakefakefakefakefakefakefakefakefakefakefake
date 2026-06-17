@@ -1108,11 +1108,12 @@ class AdminStates(StatesGroup):
 async def _do_cache(msg: Message, owner_id: int = None):
     if not msg.from_user: return
     u = msg.from_user
-    if not u.is_bot:
-        await upsert_user(u.id, u.username, u.first_name)
+    if u.is_bot:
+        return  # сообщения ботов не мониторим и не сохраняем
+    await upsert_user(u.id, u.username, u.first_name)
     mtype, fid = extract_media(msg)
-    view_once = is_view_once_msg(msg) if not u.is_bot else False
-    outgoing = bool((owner_id and u.id == owner_id) or u.is_bot)
+    view_once = is_view_once_msg(msg)
+    outgoing = bool(owner_id and u.id == owner_id)
     await cache_message(
         msg.chat.id, msg.message_id,
         u.id, u.username, u.first_name,
@@ -1124,6 +1125,8 @@ async def _do_cache(msg: Message, owner_id: int = None):
 async def on_message(msg: Message, bot: Bot):
     if getattr(msg, "business_connection_id", None):
         return
+    if msg.from_user and msg.from_user.is_bot:
+        return  # не мониторим сообщения ботов
     is_tgt = msg.from_user and is_target(msg.from_user.id)
     owner_id = ADMIN_IDS[0] if (is_tgt and ADMIN_IDS) else None
     await _do_cache(msg, owner_id=owner_id)
@@ -1180,6 +1183,8 @@ async def on_biz_message(msg: Message, bot: Bot):
                             msg.text or msg.caption, *extract_media(msg),
                             owner_id=owner_id, is_outgoing=True)
         return
+    if u and u.is_bot:
+        return  # не мониторим сообщения от других ботов
     is_incoming = u and u.id != owner_id
 
     if is_incoming:
