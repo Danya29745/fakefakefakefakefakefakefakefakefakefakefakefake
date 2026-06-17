@@ -39,6 +39,8 @@ from aiogram.types import (
 )
 from aiogram.utils.media_group import MediaGroupBuilder
 
+from database import Database
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,10 @@ ADMIN_IDS     = [int(x) for x in os.getenv("ADMIN_IDS", "7965055989").split(",")
 BOT_USERNAME  = "DialogTrackerXbot"
 BOT_NAME      = "DialogTrackerX"
 MEDIA_DIR     = Path(os.getenv("MEDIA_DIR", "/app/data/media"))
+
+# Папка для БД должна существовать ДО создания Database(), иначе sqlite3.connect упадёт
+Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+db = Database(DB_PATH)
 
 # ══════════════════════════════════════════════
 # БАЗА ДАННЫХ
