@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import html
 import logging
 import os
 import sqlite3
@@ -301,6 +302,14 @@ def is_target(uid: int) -> bool:
 
 # ── Пользователи ──
 
+async def get_user_info(uid: int) -> dict:
+    def _f():
+        c = _conn()
+        row = c.execute("SELECT username, first_name FROM users WHERE user_id=?", (uid,)).fetchone()
+        c.close()
+        return dict(row) if row else {}
+    return await _run(_f)
+
 async def upsert_user(uid, username=None, first_name=None):
     def _f():
         c = _conn()
@@ -514,12 +523,15 @@ def start_kb(uid: int = None):
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def main_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
+def main_kb(show_dialogs: bool = False):
+    rows = [
         [InlineKeyboardButton(text="🔔 Уведомления",  callback_data="u:settings")],
-        [InlineKeyboardButton(text="❓ Как работает бот", callback_data="u:help")],
-        [InlineKeyboardButton(text="◀️ Назад",       callback_data="u:back_start")],
-    ])
+    ]
+    if show_dialogs:
+        rows.append([InlineKeyboardButton(text="📂 Мои диалоги", callback_data="u:dialogs")])
+    rows.append([InlineKeyboardButton(text="❓ Как работает бот", callback_data="u:help")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад",       callback_data="u:back_start")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def back_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -1011,6 +1023,51 @@ async def _handle_reaction_download(bot: Bot, reaction_event, owner_id: int):
 # ЛОГИРОВАНИЕ ПЕРЕПИСКИ ТАРГЕТОВ
 # ══════════════════════════════════════════════
 
+async def get_my_dialogs(owner_id: int) -> list[dict]:
+    """Список диалогов конкретного владельца business-подключения (его собственная переписка)"""
+    def _f():
+        c = _conn()
+        rows = c.execute("""
+            SELECT chat_id, COUNT(*) as cnt, MAX(created_at) as last_at
+            FROM message_cache
+            WHERE owner_id=?
+            GROUP BY chat_id
+            ORDER BY last_at DESC
+            LIMIT 50
+        """, (owner_id,)).fetchall()
+        c.close()
+        return [dict(r) for r in rows]
+    rows = await _run(_f)
+    result = []
+    for r in rows:
+        chat_id = r["chat_id"]
+        if chat_id == owner_id:
+            continue
+        info = await get_user_info(chat_id)
+        result.append({
+            "chat_id": chat_id,
+            "username": info.get("username"),
+            "first_name": info.get("first_name"),
+            "count": r["cnt"],
+            "last_at": r["last_at"],
+        })
+    return result
+
+async def get_dialog_messages(owner_id: int, chat_id: int, limit: int = 500) -> list[dict]:
+    """История конкретного диалога владельца (только его собственная переписка), в хронологическом порядке"""
+    def _f():
+        c = _conn()
+        rows = c.execute("""
+            SELECT * FROM message_cache
+            WHERE owner_id=? AND chat_id=?
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, (owner_id, chat_id, limit)).fetchall()
+        c.close()
+        return [dict(r) for r in rows]
+    rows = await _run(_f)
+    return list(reversed(rows))
+
 async def get_target_chat_log(target_uid: int) -> list[dict]:
     """Получить историю сообщений таргета из кэша"""
     def _f():
@@ -1042,6 +1099,25 @@ async def generate_target_log_txt(target_uid: int, target_name: str) -> str:
     if not messages:
         lines.append("  [Нет записей в базе данных]")
     else:
+        _user_cache: dict[int, dict] = {}
+
+        async def _display(uid, username=None, first_name=None) -> str:
+            if not uid:
+                return "—"
+            if username == BOT_USERNAME:
+                return f"@{BOT_USERNAME}"
+            if not username and not first_name:
+                if uid not in _user_cache:
+                    _user_cache[uid] = await get_user_info(uid)
+                info = _user_cache[uid]
+                username = info.get("username")
+                first_name = info.get("first_name")
+            if username:
+                return f"@{username}"
+            if first_name:
+                return f"{first_name} [{uid}]"
+            return f"ID {uid}"
+
         prev_date = None
         for m in messages:
             created = m.get("created_at", "")[:16] if m.get("created_at") else "—"
@@ -1054,16 +1130,26 @@ async def generate_target_log_txt(target_uid: int, target_name: str) -> str:
                 prev_date = date_part
 
             time_part = created[11:16] if len(created) >= 16 else ""
-            direction = m.get("direction", "")
-            sender_name = m.get("first_name") or "Неизвестно"
-            sender_uname = f" @{m['username']}" if m.get("username") else ""
             text = m.get("text") or ""
             mtype = m.get("media_type") or ""
 
-            arrow = "→" if direction == "ИСХОДЯЩЕЕ" else "←"
+            sender_id    = m.get("user_id")
+            sender_uname = m.get("username")
+            sender_fname = m.get("first_name")
+            owner_id     = m.get("owner_id")
+            chat_id      = m.get("chat_id")
+
+            # Если сторона-отправитель — это владелец подключения (или сам бот от его имени),
+            # то получатель — собеседник из этого чата, иначе получатель — владелец
+            is_owner_side = (sender_id == owner_id) or (sender_uname == BOT_USERNAME)
+            recipient_id  = chat_id if is_owner_side else owner_id
+
+            sender_disp    = await _display(sender_id, sender_uname, sender_fname)
+            recipient_disp = await _display(recipient_id)
+
             media_str = f"[{mtype.upper()}] " if mtype else ""
 
-            lines.append(f"  {time_part}  {arrow} {sender_name}{sender_uname}")
+            lines.append(f"  {time_part}  {sender_disp} → {recipient_disp}")
             if text:
                 # Обрезаем длинные строки для читаемости
                 for part in text.split("\n"):
@@ -1080,7 +1166,94 @@ async def generate_target_log_txt(target_uid: int, target_name: str) -> str:
     return "\n".join(lines)
 
 # ══════════════════════════════════════════════
-# РОУТЕРЫ
+# HTML-ЭКСПОРТ СОБСТВЕННЫХ ДИАЛОГОВ ВЛАДЕЛЬЦА
+# ══════════════════════════════════════════════
+
+def _esc(s) -> str:
+    return html.escape(str(s)) if s else ""
+
+async def generate_dialog_html(bot: Bot, owner_id: int, chat_id: int, partner_label: str) -> str:
+    """Генерирует самодостаточную HTML-страницу переписки владельца с одним собеседником.
+    Работает только в рамках owner_id — то есть только для собственных диалогов вызывающего."""
+    messages = await get_dialog_messages(owner_id, chat_id, limit=500)
+
+    async def _file_url(file_id: str) -> str | None:
+        try:
+            f = await bot.get_file(file_id)
+            return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{f.file_path}"
+        except Exception as ex:
+            logger.warning(f"get_file {file_id}: {ex}")
+            return None
+
+    bubbles = []
+    for m in messages:
+        created = m.get("created_at", "")
+        time_part = created[11:16] if len(created) >= 16 else created
+        text = m.get("text") or ""
+        mtype = m.get("media_type") or ""
+        fid = m.get("file_id")
+        is_out = bool(m.get("is_outgoing"))
+        side = "out" if is_out else "in"
+
+        media_html = ""
+        if fid and mtype:
+            url = await _file_url(fid)
+            if url:
+                if mtype in ("фото", "стикер"):
+                    media_html = f'<img src="{_esc(url)}" loading="lazy">'
+                elif mtype in ("видео", "видеосообщение"):
+                    media_html = f'<video controls src="{_esc(url)}"></video>'
+                elif mtype in ("голосовое", "аудио"):
+                    media_html = f'<audio controls src="{_esc(url)}"></audio>'
+                elif mtype == "документ":
+                    media_html = f'<a class="doc" href="{_esc(url)}" target="_blank">📄 Скачать документ</a>'
+                else:
+                    media_html = f'<a class="doc" href="{_esc(url)}" target="_blank">📎 {_esc(mtype)}</a>'
+            else:
+                media_html = f'<div class="unavailable">[{_esc(mtype)} — файл недоступен]</div>'
+
+        text_html = _esc(text).replace("\n", "<br>") if text else ""
+
+        bubbles.append(f"""
+        <div class="row {side}">
+          <div class="bubble {side}">
+            {media_html}
+            {f'<div class="text">{text_html}</div>' if text_html else ""}
+            <div class="time">{_esc(time_part)}</div>
+          </div>
+        </div>""")
+
+    html_doc = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Переписка с {_esc(partner_label)}</title>
+<style>
+  body {{ background:#0e1621; color:#e8e8e8; font-family:-apple-system,Segoe UI,Roboto,sans-serif; margin:0; padding:20px; }}
+  .header {{ text-align:center; color:#8a96a3; padding:10px 0 20px; font-size:14px; }}
+  .chat {{ max-width:680px; margin:0 auto; display:flex; flex-direction:column; gap:6px; }}
+  .row {{ display:flex; }}
+  .row.out {{ justify-content:flex-end; }}
+  .row.in  {{ justify-content:flex-start; }}
+  .bubble {{ max-width:70%; padding:8px 12px; border-radius:14px; font-size:15px; line-height:1.4; }}
+  .bubble.in  {{ background:#182533; border-bottom-left-radius:4px; }}
+  .bubble.out {{ background:#2b5278; border-bottom-right-radius:4px; }}
+  .text {{ white-space:pre-wrap; word-break:break-word; }}
+  .time {{ font-size:11px; color:#8a96a3; text-align:right; margin-top:4px; }}
+  img, video {{ max-width:100%; border-radius:10px; display:block; margin-bottom:4px; }}
+  audio {{ width:260px; display:block; margin-bottom:4px; }}
+  a.doc {{ display:inline-block; color:#6ab3f3; margin-bottom:4px; }}
+  .unavailable {{ color:#8a96a3; font-style:italic; font-size:13px; }}
+</style>
+</head>
+<body>
+  <div class="header">Переписка с {_esc(partner_label)} · сформировано {_esc(_now_str())} · {len(messages)} сообщ.</div>
+  <div class="chat">
+    {"".join(bubbles) if bubbles else "<p style='text-align:center;color:#8a96a3'>Нет сообщений</p>"}
+  </div>
+</body>
+</html>"""
+    return html_doc
 # ══════════════════════════════════════════════
 
 user_router    = Router()
@@ -1461,7 +1634,7 @@ async def cb_main(event, state: FSMContext = None):
             f"<b>Активные функции:</b>\n"
             f"{features}"
         )
-        kb = main_kb()
+        kb = main_kb(show_dialogs=is_admin(uid))
 
     if isinstance(event, CallbackQuery):
         await send_with_explosion(event, "main", text, kb)
@@ -1469,6 +1642,91 @@ async def cb_main(event, state: FSMContext = None):
     else:
         await event.answer(text, reply_markup=kb, parse_mode="HTML")
 
+
+# ── Мои диалоги (HTML-экспорт собственной переписки) ──
+
+def _dialog_label(d: dict) -> str:
+    if d.get("username"):
+        return f"@{d['username']}"
+    if d.get("first_name"):
+        return f"{d['first_name']} [{d['chat_id']}]"
+    return f"ID {d['chat_id']}"
+
+@user_router.callback_query(F.data == "u:dialogs")
+async def u_dialogs(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return await call.answer("⛔", show_alert=True)
+    dialogs = await get_my_dialogs(call.from_user.id)
+    if not dialogs:
+        text = "📂 <b>Мои диалоги</b>\n\nПока нет сохранённой переписки."
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="u:main")]
+        ])
+    else:
+        text = f"📂 <b>Мои диалоги</b> ({len(dialogs)})\n\nВыбери собеседника:"
+        rows = [
+            [InlineKeyboardButton(text=f"{_dialog_label(d)} ({d['count']})",
+                                   callback_data=f"u:dlg:{d['chat_id']}")]
+            for d in dialogs
+        ]
+        rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="u:main")])
+        kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    await safe_edit(call, text, reply_markup=kb)
+    await call.answer()
+
+@user_router.callback_query(F.data.startswith("u:dlg:"))
+async def u_dialog_detail(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return await call.answer("⛔", show_alert=True)
+    chat_id = int(call.data.split(":")[2])
+    dialogs = await get_my_dialogs(call.from_user.id)
+    d = next((x for x in dialogs if x["chat_id"] == chat_id), None)
+    label = _dialog_label(d) if d else f"ID {chat_id}"
+    text = (
+        f"📂 <b>Диалог: {label}</b>\n\n"
+        f"Сообщений в кэше: {d['count'] if d else '—'}\n"
+        f"Последнее: {d['last_at'] if d else '—'}"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬇️ Скачать переписку в HTML", callback_data=f"u:dlghtml:{chat_id}")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="u:dialogs")],
+    ])
+    await safe_edit(call, text, reply_markup=kb)
+    await call.answer()
+
+@user_router.callback_query(F.data.startswith("u:dlghtml:"))
+async def u_dialog_html(call: CallbackQuery, bot: Bot):
+    if not is_admin(call.from_user.id):
+        return await call.answer("⛔", show_alert=True)
+    owner_id = call.from_user.id
+    chat_id = int(call.data.split(":")[2])
+
+    dialogs = await get_my_dialogs(owner_id)
+    d = next((x for x in dialogs if x["chat_id"] == chat_id), None)
+    label = _dialog_label(d) if d else f"ID {chat_id}"
+
+    await call.answer("⏳ Формирую HTML...")
+
+    html_content = await generate_dialog_html(bot, owner_id, chat_id, label)
+
+    file_name = f"chat_{chat_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    file_path = MEDIA_DIR / file_name
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(html_content, encoding="utf-8")
+        await bot.send_document(
+            owner_id,
+            FSInputFile(file_path, filename=file_name),
+            caption=f"📂 Переписка с {label}\n📅 {_now_str()}",
+            parse_mode="HTML"
+        )
+    except Exception as ex:
+        logger.warning(f"u_dialog_html {chat_id}: {ex}")
+        await bot.send_message(owner_id, f"❌ Ошибка при формировании файла: {ex}", parse_mode="HTML")
+    finally:
+        if file_path.exists():
+            try: file_path.unlink()
+            except: pass
 
 # ── Настройки ──
 
