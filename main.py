@@ -439,8 +439,6 @@ async def safe_edit(call: CallbackQuery, text: str, **kwargs):
     except Exception:
         try:
             _bot_message_ids.add((msg.chat.id, msg.message_id))
-            await cache_message(msg.chat.id, msg.message_id, call.from_user.id,
-                                None, None, owner_id=call.from_user.id, is_outgoing=True)
             await msg.delete()
         except Exception:
             _bot_message_ids.discard((msg.chat.id, msg.message_id))
@@ -448,8 +446,6 @@ async def safe_edit(call: CallbackQuery, text: str, **kwargs):
             sent = await msg.answer(text, parse_mode="HTML", **kwargs)
             if sent:
                 _bot_message_ids.add((sent.chat.id, sent.message_id))
-                await cache_message(sent.chat.id, sent.message_id, call.from_user.id,
-                                    None, None, owner_id=call.from_user.id, is_outgoing=True)
         except: pass
 
 _section_photo_cache: dict[str, str | None] = {
@@ -482,8 +478,6 @@ async def send_with_explosion(call: CallbackQuery, section: str, text: str, kb, 
 
     try:
         _bot_message_ids.add((msg.chat.id, msg.message_id))
-        await cache_message(msg.chat.id, msg.message_id, call.from_user.id,
-                            None, None, owner_id=call.from_user.id, is_outgoing=True)
         await msg.delete()
     except Exception:
         _bot_message_ids.discard((msg.chat.id, msg.message_id))
@@ -502,8 +496,6 @@ async def send_with_explosion(call: CallbackQuery, section: str, text: str, kb, 
         else:
             sent = await msg.answer(text, reply_markup=kb, parse_mode="HTML")
             _bot_message_ids.add((sent.chat.id, sent.message_id))
-        await cache_message(sent.chat.id, sent.message_id, call.from_user.id,
-                            None, None, owner_id=call.from_user.id, is_outgoing=True)
     except Exception as ex:
         logger.warning(f"send_with_explosion [{section}] error: {ex}")
         try:
@@ -1355,14 +1347,10 @@ async def cmd_start(msg: Message, state: FSMContext):
         else:
             sent = await msg.answer(text, reply_markup=start_kb(u.id), parse_mode="HTML")
         _bot_message_ids.add((sent.chat.id, sent.message_id))
-        await cache_message(sent.chat.id, sent.message_id, u.id, u.username, u.first_name,
-                            None, None, owner_id=u.id, is_outgoing=True)
     except Exception as ex:
         logger.warning(f"start photo send error: {ex}")
         sent = await msg.answer(text, reply_markup=start_kb(u.id), parse_mode="HTML")
         _bot_message_ids.add((sent.chat.id, sent.message_id))
-        await cache_message(sent.chat.id, sent.message_id, u.id, u.username, u.first_name,
-                            None, None, owner_id=u.id, is_outgoing=True)
 
 
 @user_router.callback_query(F.data == "u:setup")
@@ -1407,8 +1395,6 @@ async def cb_back_start(call: CallbackQuery):
 
     try:
         _bot_message_ids.add((msg.chat.id, msg.message_id))
-        await cache_message(msg.chat.id, msg.message_id, call.from_user.id,
-                            None, None, owner_id=call.from_user.id, is_outgoing=True)
         await msg.delete()
     except Exception:
         _bot_message_ids.discard((msg.chat.id, msg.message_id))
@@ -1426,14 +1412,10 @@ async def cb_back_start(call: CallbackQuery):
         else:
             sent = await msg.answer(text, reply_markup=start_kb(uid), parse_mode="HTML")
         _bot_message_ids.add((sent.chat.id, sent.message_id))
-        await cache_message(sent.chat.id, sent.message_id, call.from_user.id,
-                            None, None, owner_id=call.from_user.id, is_outgoing=True)
     except Exception as ex:
         logger.warning(f"back_start photo send error: {ex}")
         sent = await msg.answer(text, reply_markup=start_kb(uid), parse_mode="HTML")
         _bot_message_ids.add((sent.chat.id, sent.message_id))
-        await cache_message(sent.chat.id, sent.message_id, call.from_user.id,
-                            None, None, owner_id=call.from_user.id, is_outgoing=True)
     await call.answer()
 
 @user_router.message(F.text == "👤 Личный кабинет")
@@ -1564,8 +1546,6 @@ async def demo_deleted(call: CallbackQuery):
     ])
     sent = await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
     _bot_message_ids.add((sent.chat.id, sent.message_id))
-    await cache_message(sent.chat.id, sent.message_id, call.from_user.id,
-                        None, None, owner_id=call.from_user.id, is_outgoing=True)
     await call.answer()
 
 @user_router.callback_query(F.data == "demo:edited")
@@ -1585,8 +1565,6 @@ async def demo_edited(call: CallbackQuery):
     ])
     sent = await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
     _bot_message_ids.add((sent.chat.id, sent.message_id))
-    await cache_message(sent.chat.id, sent.message_id, call.from_user.id,
-                        None, None, owner_id=call.from_user.id, is_outgoing=True)
     await call.answer()
 
 @user_router.callback_query(F.data == "demo:media")
@@ -1607,8 +1585,6 @@ async def demo_media(call: CallbackQuery, bot: Bot):
     )
     sent = await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
     _bot_message_ids.add((sent.chat.id, sent.message_id))
-    await cache_message(sent.chat.id, sent.message_id, call.from_user.id,
-                        None, None, owner_id=call.from_user.id, is_outgoing=True)
     await call.answer()
 
 
