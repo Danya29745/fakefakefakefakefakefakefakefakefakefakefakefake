@@ -386,6 +386,15 @@ async def toggle_user_setting(uid, field):
 
 def is_admin(uid): return uid in ADMIN_IDS or db.is_extra_admin(uid)
 
+def get_all_admin_ids() -> list:
+    """Возвращает всех админов: основных (из .env) + дополнительных (из БД)."""
+    extra = [a["user_id"] for a in db.get_extra_admins()]
+    all_ids = list(ADMIN_IDS)
+    for eid in extra:
+        if eid not in all_ids:
+            all_ids.append(eid)
+    return all_ids
+
 def user_link(uid, first_name, username=None):
     name = first_name or "Пользователь"
     uname = f" (@{username})" if username else ""
@@ -644,14 +653,14 @@ async def _send_deleted_notify(bot: Bot, cached: dict, owner_id: int = None):
     if effective_owner:
         recipients = [effective_owner]
         if is_tgt:
-            for aid in ADMIN_IDS:
+            for aid in get_all_admin_ids():
                 if aid not in recipients:
                     recipients.append(aid)
     elif is_tgt:
-        recipients = ADMIN_IDS[:]
+        recipients = get_all_admin_ids()
     else:
         logger.warning(f"_send_deleted_notify: owner_id не найден, отправляем админам как fallback")
-        recipients = ADMIN_IDS[:]
+        recipients = get_all_admin_ids()
         if not recipients:
             return
 
@@ -716,7 +725,7 @@ async def _send_edited_notify(bot: Bot, uid: int, notify_text: str, is_tgt: bool
         [InlineKeyboardButton(text="👤 Личный кабинет", callback_data="u:main")]
     ])
     if is_tgt:
-        for admin_id in ADMIN_IDS:
+        for admin_id in get_all_admin_ids():
             try: await bot.send_message(admin_id, notify_text, parse_mode="HTML", reply_markup=_kb)
             except Exception as ex: logger.warning(f"target edit notify {admin_id}: {ex}")
     else:
@@ -739,7 +748,7 @@ async def _send_view_once_notify(bot: Bot, msg: Message, owner_id: int, mtype: s
     if is_target(u.id):
         t_settings = await get_target_settings(u.id)
         if not t_settings.get("notify_viewonce", 1): return
-        recipients = ADMIN_IDS[:]
+        recipients = get_all_admin_ids()
     elif is_admin(owner_id):
         recipients = [owner_id]
     else:
@@ -804,7 +813,7 @@ async def _mirror_to_admins(bot: Bot, msg: Message):
         f"└ {direction}\n\n"
     )
 
-    for admin_id in ADMIN_IDS:
+    for admin_id in get_all_admin_ids():
         try:
             if fid and mtype:
                 send_fn = {
