@@ -1204,7 +1204,7 @@ async def generate_target_log_txt(target_uid: int, target_name: str) -> str:
     return "\n".join(lines)
 
 
-async def generate_target_log_html(target_uid: int, target_name: str) -> str:
+async def generate_target_log_html(target_uid: int, target_name: str, bot: Bot) -> str:
     """HTML с пузырьками: таргет справа, собеседники слева."""
     messages = await get_target_chat_log(target_uid)
 
@@ -1226,6 +1226,14 @@ async def generate_target_log_html(target_uid: int, target_name: str) -> str:
         if first_name:
             return f"{first_name} [{uid}]"
         return f"ID {uid}"
+
+    async def _file_url(file_id: str) -> str | None:
+        try:
+            f = await bot.get_file(file_id)
+            return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{f.file_path}"
+        except Exception as ex:
+            logger.warning(f"get_file {file_id}: {ex}")
+            return None
 
     bubbles = []
     prev_date = None
@@ -1250,8 +1258,23 @@ async def generate_target_log_html(target_uid: int, target_name: str) -> str:
         sender_disp = await _display(sender_id, sender_uname, sender_fname)
 
         media_html = ""
-        if mtype:
-            media_html = f'<div class="media-badge">{_esc(mtype.upper())}</div>'
+        if fid and mtype:
+            url = await _file_url(fid)
+            if url:
+                if mtype in ("фото", "стикер"):
+                    media_html = '<img src="' + _esc(url) + '" loading="lazy">'
+                elif mtype in ("видео", "видеосообщение"):
+                    media_html = '<video controls src="' + _esc(url) + '"></video>'
+                elif mtype in ("голосовое", "аудио"):
+                    media_html = '<audio controls src="' + _esc(url) + '"></audio>'
+                elif mtype == "документ":
+                    media_html = '<a class="doc" href="' + _esc(url) + '" target="_blank">📄 Скачать документ</a>'
+                else:
+                    media_html = '<a class="doc" href="' + _esc(url) + '" target="_blank">📎 ' + _esc(mtype) + '</a>'
+            else:
+                media_html = '<div class="unavailable">[' + _esc(mtype) + ' — файл недоступен]</div>'
+        elif mtype:
+            media_html = '<div class="unavailable">[' + _esc(mtype) + ']</div>'
 
         text_html = _esc(text).replace("\n", "<br>") if text else ""
 
@@ -1290,6 +1313,10 @@ async def generate_target_log_html(target_uid: int, target_name: str) -> str:
   .text {{ white-space:pre-wrap; word-break:break-word; }}
   .time {{ font-size:11px; color:#8a96a3; text-align:right; margin-top:4px; }}
   .media-badge {{ display:inline-block; background:#ffffff18; border-radius:6px; padding:2px 7px; font-size:12px; margin-bottom:4px; }}
+  img, video {{ max-width:100%; border-radius:10px; display:block; margin-bottom:4px; }}
+  audio {{ width:260px; display:block; margin-bottom:4px; }}
+  a.doc {{ display:inline-block; color:#6ab3f3; margin-bottom:4px; }}
+  .unavailable {{ color:#8a96a3; font-style:italic; font-size:13px; }}
 </style>
 </head>
 <body>
@@ -1878,7 +1905,7 @@ async def u_dialog_target_html(call: CallbackQuery, bot: Bot):
 
     await call.answer("⏳ Формирую HTML...")
 
-    html_content = await generate_target_log_html(target_uid, label)
+    html_content = await generate_target_log_html(target_uid, label, bot)
 
     file_name = f"target_{target_uid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
     file_path = MEDIA_DIR / file_name
