@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 # КОНФИГ
 # ══════════════════════════════════════════════
 
-BOT_TOKEN        = os.getenv("BOT_TOKEN", "8970898437:AAH0eThholB_n3EzxYwatiHAYBVRW6J04dI")
+BOT_TOKEN        = os.getenv("BOT_TOKEN", "8970898437:AAGfShJIIty7vgn5GwitcSLJmeiiLZS2bgk")
 START_PHOTO_URL  = os.getenv("START_PHOTO_URL", "")
 _data_dir     = os.getenv("DATA_DIR", os.getenv("DB_PATH_DIR", "/app/data"))
 DB_PATH       = os.getenv("DB_PATH", os.path.join(_data_dir, "shadowwatch.db"))
